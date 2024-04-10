@@ -1,0 +1,226 @@
+//Script to simulate a bottleneck and a recovery
+//Written by Hernán E. Morales - hernan.moral [at] gmail.com
+
+initialize() {
+	
+	if (exists("chrSize")==0){
+		defineConstant("chrSize",1e7); // chromosome size
+	}
+	
+	if (exists("slimIN")==0){
+		defineConstant("slimIN","~/Desktop/out_mammoth_burnin_test_Ne1000_mu1.2e-08_rho1e-08_seLen10000001.0_seed1234_fullOut.slim"); // path of burn in population file
+	}
+	
+	if (exists("DIR")==0){
+		defineConstant("DIR","~/Desktop/"); // output path
+	}
+	
+	if (exists("outPref")==0){
+		defineConstant("outPref","out_mammoth_decline"); // output prefix name
+	}
+	
+	if (exists("BURN")==0){
+		defineConstant("BURN",10); // lenght of second (short) burnin, to make sure pop find 2nd equilibroum after msprime
+	}
+	
+	if (exists("Ne")==0){
+		defineConstant("Ne",1000); // Pop size in Ne
+	}
+	
+	if (exists("btl")==0){
+		defineConstant("btl",10); // size of botleneck Ne 
+	}
+	
+	if (exists("recoveryT")==0){
+		defineConstant("recoveryT",1); // recovery time in generation after bottleneck
+	}
+	
+	if (exists("recoveryN")==0){
+		defineConstant("recoveryN",50); // recovery Ne
+	}
+	
+	if (exists("btlY")==0){
+		defineConstant("btlY",10000); // total duration of the demographic events in years, which is tranlsated to generations below
+	}
+	
+	defineConstant("genT",31); // generation time
+	defineConstant("btlG",ceil(btlY/genT)); // total duration of the demographic events in generations
+		
+	initializeSLiMOptions(keepPedigrees = T);
+	initializeMutationRate(1.2e-08);
+	
+	// m1 mutation type: neutral
+	initializeMutationType("m1", 0.5, "f", 0.0);
+	
+	// g1 genomic element type: uses m1 for all mutations
+	initializeGenomicElementType("g1", m1, 1.0);
+	
+	// uniform chromosome with uniform recombination
+	initializeGenomicElement(g1, 0, asInteger(chrSize));
+	if (exists("roh")==0){
+		defineConstant("roh",1e-8); // recombination rate
+	}
+	initializeRecombinationRate(roh);
+}
+
+// read slim burn in file
+1 {
+	
+	sim.readFromPopulationFile(slimIN);
+	
+	// define when botleneck, recovery and last step happens
+	defineConstant("initGen",sim.generation);
+	defineConstant("btlT",initGen+50);
+	sim.rescheduleScriptBlock(s0,btlT,btlT);
+	sim.rescheduleScriptBlock(s1,btlT+recoveryT,btlT+recoveryT);
+	defineConstant("END",asInteger(btlT+btlG));
+	sim.rescheduleScriptBlock(s2,END,END);
+	
+	
+	// define full output name	
+	defineConstant("OUT",DIR+"/"+outPref+"_Ne"+Ne+"_chrSize"+asString(sim.chromosome.lastPosition)+"_btlT"+btlT+"_btl"+btl+"_recoveryT"+recoveryT+"_recoveryN"+recoveryN+"_seed"+getSeed());
+	
+	// create output header files	
+	head="gen" +"\t"+ "pop" +"\t"+ "pi_m" +"\t"+ "pi_sd" +"\t"+ "H_m" +"\t"+ "H_sd" +"\t"+ "N";
+	writeFile(OUT+"_summaryDiversity.txt",head,append=F);
+	
+	head="gen" +"\t"+ "pop" + "\t" + "indvID" +"\t"+ "pi" +"\t"+ "H" +"\t"+ "N" +"\t"+ "sample";
+	writeFile(OUT+"_indvDiversity.txt",head,append=F);
+	
+//	head="gen" +"\t"+ "pop" +"\t"+ "indv_ID" +"\t"+ "age" +"\t"+ "pos" +"\t"+ "SROH" +"\t"+ "NROH" +"\t"+ "FROH" +"\t"+ "ROH_lengths"+"\t"+ "ROH_coords";
+//	writeFile(OUT+"_ROH.txt",head,append=F);
+	
+
+	// print some info	
+	print("###############"+"\n");
+	print("output: "+OUT);
+	print("run block s0 - bottleneck will start in gen: " + "\n");print(s0);
+	print("run block s1 - recovery will start in gen: " + "\n");print(s1);
+	print("run block s2 - simulation will end in gen: " + "\n");print(s2);
+	print("###############"+"\n");
+
+
+}
+
+mateChoice() {
+	// Prefer non-relatives as mates
+	return weights * abs(1-(individual.relatedness(sourceSubpop.individuals))+0.0001);
+}
+
+// botleneck
+s0 10000000 late()
+{
+	sim.subpopulations[0].setSubpopulationSize(btl);
+}
+
+// recovery
+s1 10000000 late()
+{
+	
+	sim.subpopulations[0].setSubpopulationSize(recoveryN);
+}
+
+
+// summary stats every 2 generations
+2: late()
+{
+	if((sim.generation == (initGen+1) | sim.generation % 2 ==0))
+	{
+		
+		print("start full out "+ time());
+		
+		out=getNeutHet(sim.subpopulations[0],m1);
+		writeFile(OUT+"_summaryDiversity.txt",out,append=T);
+		out=getNeutHet_ind(sim.subpopulations[0],m1,10);
+		writeFile(OUT+"_indvDiversity.txt",out,append=T);
+
+
+		print("end full out "+ time());	
+	}
+}
+
+// end
+s2 10000000 late()
+{
+	
+//	compress output files and finish simulation	
+	CMD="gzip "+OUT+"*";
+	system(command=CMD);
+	
+	sim.simulationFinished();
+}
+
+
+/// Print progress
+1: late() {
+	if(sim.generation == 1 | sim.generation % 50 ==0){
+		print(date() + "\t" + time() + "\t" + "generation: " + sim.generation + "\t" + "N: " + sim.subpopulations[0].individualCount+ "  memory usage: "+usage()/1000+"Gb");
+	}
+}
+
+////// function to output stats
+
+function (s)getNeutHet (o pop, o mut) {
+	
+	total_pi = c();
+	total_H = c();
+	for (ind in pop.individuals)
+	{
+		// Calculate the nucleotide heterozygosity of this individual
+		muts0 = ind.genomes[0].mutationsOfType(mut);
+		muts1 = ind.genomes[1].mutationsOfType(mut);
+		
+		// Count the shared mutations
+		shared_count = sum(match(muts0, muts1) >= 0);
+		
+		// All remaining mutations in the genomes are unshared (i.e. heterozygous)
+		unshared_count = muts0.size() + muts1.size() - 2 * shared_count;
+		
+		// pi is the mean heterozygosity across the chromosome
+		pi_ind = unshared_count / (sim.chromosome.lastPosition + 1);
+		total_pi = c(total_pi,pi_ind);
+		// H is the mean heterozygosity per Kb
+		H_ind = unshared_count / ((sim.chromosome.lastPosition + 1)/1e3);
+		total_H = c(total_H,H_ind);
+	}
+	
+	size = pop.individuals.size();
+	pi = mean(total_pi);
+	H = mean(total_H);
+	out = sim.generation + "\t" + pop.id + "\t" + mean(total_pi) + "\t" + sd(total_pi) + "\t" + mean(total_H) + "\t" + sd(total_H) + "\t" +size;
+	return out;
+
+}
+
+function (s)getNeutHet_ind (o pop, o mut, i sampSize) {
+	
+	individuals=pop.sampleIndividuals(sampSize);
+	total_pi = c();
+	total_H = c();
+	for (ind in individuals)
+	{
+		// Calculate the nucleotide heterozygosity of this individual
+		muts0 = ind.genomes[0].mutationsOfType(mut);
+		muts1 = ind.genomes[1].mutationsOfType(mut);
+		
+		// Count the shared mutations
+		shared_count = sum(match(muts0, muts1) >= 0);
+		
+		// All remaining mutations in the genomes are unshared (i.e. heterozygous)
+		unshared_count = muts0.size() + muts1.size() - 2 * shared_count;
+		
+		// pi is the mean heterozygosity across the chromosome
+		pi_ind = unshared_count / (sim.chromosome.lastPosition + 1);
+		total_pi = c(total_pi,pi_ind);
+		// H is the mean heterozygosity per Kb
+		H_ind = unshared_count / ((sim.chromosome.lastPosition + 1)/1e3);
+		total_H = c(total_H,H_ind);
+	}
+	
+	size = pop.individuals.size();
+	pi = mean(total_pi);
+	H = mean(total_H);
+	out = sim.generation + "\t" + pop.id + "\t" + individuals.index + "\t" + total_pi + "\t" + total_H + "\t" + size + "\t" +length(individuals);
+	return out;
+
+}
